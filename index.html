@@ -168,23 +168,56 @@ footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--bd);display:f
     </div>
     <div class="tab-pane active" id="pA">
       <div class="minfo">
-        <strong>Configure uma vez, sincroniza automático:</strong>
+        <strong>Configure uma vez, sincroniza automático (a cada 10 min):</strong>
         <ol>
           <li>Na planilha: <strong>Extensões → Apps Script</strong></li>
           <li>Apague tudo e cole o código abaixo</li>
           <li><strong>Implantar → Nova implantação → App da Web</strong></li>
           <li>Executar como: <code>Eu</code> · Acesso: <code>Qualquer pessoa</code></li>
-          <li>Cole a URL gerada abaixo e clique em Conectar</li>
+          <li>Cole a URL gerada abaixo e clique em Conectar (vale só para este navegador)</li>
+          <li>Para valer para todos que abrirem o link: cole a URL em <code>SHEET_URL</code> no início do script do <code>index.html</code></li>
         </ol>
       </div>
-      <div class="scode">function doGet() {
+      <div class="scode"><span id="asCode">// Cole este código em: Planilha → Extensões → Apps Script
+// Depois: Implantar → Nova implantação → App da Web
+//   Executar como: Eu · Quem pode acessar: Qualquer pessoa
+
+var NOME_ABA = 'registro de ações comerciais';
+
+function doGet(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheets()[1]; // segunda aba
-  var data = sheet.getDataRange().getValues();
-  return ContentService
-    .createTextOutput(JSON.stringify({ data: data }))
-    .setMimeType(ContentService.MimeType.JSON);
-}<button class="copy-btn" onclick="copyCode()">Copiar</button></div>
+  var sheet = acharAba(ss, NOME_ABA);
+  if (!sheet) return responder({ error: 'Aba "' + NOME_ABA + '" não encontrada' }, e);
+  var tz = ss.getSpreadsheetTimeZone();
+  var data = sheet.getDataRange().getValues().map(function (row) {
+    return row.map(function (v) {
+      return Object.prototype.toString.call(v) === '[object Date]' ? Utilities.formatDate(v, tz, 'dd/MM/yyyy') : v;
+    });
+  });
+  return responder({ data: data, atualizado: new Date().toISOString() }, e);
+}
+
+// Acha a aba ignorando maiúsculas, acentos e espaços extras
+function acharAba(ss, nome) {
+  var alvo = normalizar(nome), abas = ss.getSheets(), i;
+  for (i = 0; i &lt; abas.length; i++) if (normalizar(abas[i].getName()) === alvo) return abas[i];
+  for (i = 0; i &lt; abas.length; i++) if (normalizar(abas[i].getName()).indexOf('registro de acoes') === 0) return abas[i];
+  return null;
+}
+
+function normalizar(s) {
+  return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// JSON normal, ou JSONP quando a página pede ?callback=
+function responder(obj, e) {
+  var json = JSON.stringify(obj);
+  var cb = e &amp;&amp; e.parameter &amp;&amp; e.parameter.callback;
+  if (cb &amp;&amp; /^[\w$]+$/.test(cb)) {
+    return ContentService.createTextOutput(cb + '(' + json + ')').setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
+  return ContentService.createTextOutput(json).setMimeType(ContentService.MimeType.JSON);
+}</span><button class="copy-btn" onclick="copyCode()">Copiar</button></div>
       <div class="url-row">
         <input type="text" id="asUrl" placeholder="https://script.google.com/macros/s/…/exec">
         <button class="btn-p" onclick="connectAS()">Conectar</button>
@@ -270,7 +303,13 @@ var D=[
   {empreendimento:"Novo Prado Elos",imobiliaria:"T3",tipo:"B",evento:"Oferta Ativa",data:"20/03/2026",custo:458.20,confirmados:0,presentes:0,propostas:1,vendas:1,vgv:358675,roi:781.79}
 ];
 
-var sortKey='data',sortAsc=true,fPill='all',fEmp='',fTipo='',fMonth='all',pg=1,PG=10,timer=null;
+// ===== CONFIGURAÇÃO =====
+// URL do App da Web do Apps Script (termina em /exec). Preenchida aqui, vale para todos que abrirem o link.
+var SHEET_URL='';
+var REFRESH_MIN=10; // intervalo de atualização automática, em minutos
+// =========================
+
+var sortKey='data',sortAsc=true,fPill='all',fEmp='',fTipo='',fMonth='all',pg=1,PG=10,timer=null,syncing=false,lastSync=0;
 var PAL=['#417FEB','#00CCFF','#0DB578','#FCD430','#4108BA','#58FFC3','#E0EDF3'];
 
 function pd(s){if(!s)return null;var p=s.split('/');return new Date(+p[2],+p[1]-1,+p[0]);}
@@ -320,82 +359,146 @@ function setSUI(state,msg){
   document.getElementById('sMsg').textContent=msg;
 }
 function copyCode(){
-  var c='function doGet() {\n  var ss = SpreadsheetApp.getActiveSpreadsheet();\n  var sheet = ss.getSheets()[1];\n  var data = sheet.getDataRange().getValues();\n  return ContentService\n    .createTextOutput(JSON.stringify({ data: data }))\n    .setMimeType(ContentService.MimeType.JSON);\n}';
+  var c=document.getElementById('asCode').textContent;
   navigator.clipboard.writeText(c).then(function(){alert('Código copiado!');}).catch(function(){alert('Copie manualmente o código acima.');});
 }
 
 // SYNC
+function getUrl(){
+  if(SHEET_URL)return SHEET_URL;
+  try{return localStorage.getItem('blue_url')||'';}catch(e){return'';}
+}
+
+function startAuto(){
+  if(timer)clearInterval(timer);
+  timer=setInterval(function(){syncNow();},REFRESH_MIN*60*1000);
+}
+
 function connectAS(){
   var url=document.getElementById('asUrl').value.trim();
   if(!url||url.indexOf('script.google.com')===-1){alert('Cole a URL do Apps Script.');return;}
-  try{localStorage.setItem('blue_url',url);}catch(e){}
+  if(!SHEET_URL){try{localStorage.setItem('blue_url',url);}catch(e){}}
   document.getElementById('btnSync').style.display='';
   syncNow(url);
-  if(timer)clearInterval(timer);
-  timer=setInterval(function(){syncNow();},5*60*1000);
+  startAuto();
 }
 
 function syncNow(arg){
-  var url=arg;
-  if(!url){try{url=localStorage.getItem('blue_url');}catch(e){}}
+  var url=(typeof arg==='string'&&arg)||getUrl();
   if(!url){setSUI('','Configure a URL do Apps Script');return;}
+  if(syncing)return;
+  syncing=true;
   setSUI('syncing','Sincronizando…');
-  fetch(url,{method:'GET',mode:'cors'})
+  var sep=url.indexOf('?')!==-1?'&':'?';
+  fetch(url+sep+'t='+Date.now(),{method:'GET',mode:'cors'})
     .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-    .then(function(j){procData(j);})
+    .then(function(j){syncing=false;procData(j);})
     .catch(function(){
+      // alternativa JSONP, caso o navegador bloqueie o fetch
       var cb='_cb'+Date.now(),to=setTimeout(function(){
         delete window[cb];var s=document.getElementById('_gs');if(s)s.remove();
-        setSUI('error','Erro: verifique URL e permissões (Acesso: Qualquer pessoa)');
+        syncing=false;setSUI('error','Erro: verifique URL e permissões (Acesso: Qualquer pessoa)');
       },12000);
-      window[cb]=function(j){clearTimeout(to);delete window[cb];var s=document.getElementById('_gs');if(s)s.remove();procData(j);};
+      window[cb]=function(j){clearTimeout(to);delete window[cb];var s=document.getElementById('_gs');if(s)s.remove();syncing=false;procData(j);};
       var s=document.createElement('script');s.id='_gs';
-      s.src=url+(url.indexOf('?')!==-1?'&':'?')+'callback='+cb;
-      s.onerror=function(){clearTimeout(to);delete window[cb];setSUI('error','Não foi possível conectar. Verifique a URL e as permissões.');};
+      s.src=url+sep+'callback='+cb;
+      s.onerror=function(){clearTimeout(to);delete window[cb];syncing=false;setSUI('error','Não foi possível conectar. Verifique a URL e as permissões.');};
       document.head.appendChild(s);
     });
 }
 
 function procData(j){
+  if(j&&j.error){setSUI('error','Erro na planilha: '+j.error);return;}
   if(!j||!j.data||!j.data.length){setSUI('error','Sem dados na resposta.');return;}
   var rows=parseMatrix(j.data);
-  if(!rows.length){setSUI('error','Nenhuma linha válida. Verifique se a planilha tem dados na aba 2.');return;}
+  if(!rows.length){setSUI('error','Nenhuma linha válida na aba "registro de ações comerciais".');return;}
   D=rows;rebuild();
+  lastSync=Date.now();
   var t=new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-  setSUI('ok','Sincronizado às '+t+' — '+rows.length+' eventos');
+  setSUI('ok','Atualizado às '+t+' — '+rows.length+' eventos · atualiza sozinho a cada '+REFRESH_MIN+' min');
   var b=document.getElementById('sBody');
   if(b.classList.contains('open')){b.classList.remove('open');document.getElementById('sToggle').textContent='▼ Configurar';}
 }
 
+// Posição padrão de cada coluna na planilha (usada quando o cabeçalho não é reconhecido)
+var COLS_PADRAO={empreendimento:0,imobiliaria:1,tipo:2,evento:3,data:4,obs:5,custo:6,confirmados:7,presentes:9,propostas:17,vendas:19,vgv:20,roi:23};
+// Nomes de cabeçalho aceitos para cada campo (sem acento, minúsculo)
+var COLS_NOMES={
+  empreendimento:['empreendimento'],
+  imobiliaria:['imobiliaria','imobiliarias'],
+  tipo:['tipo'],
+  evento:['evento','acao','nome do evento','nome da acao'],
+  data:['data'],
+  obs:['observacao','observacoes','obs'],
+  custo:['custo','investimento'],
+  confirmados:['confirmados','confirmacoes'],
+  presentes:['presentes','presenca','comparecimento'],
+  propostas:['propostas'],
+  vendas:['vendas'],
+  vgv:['vgv'],
+  roi:['roi']
+};
+var colsUsadas=null;
+
+function norm(v){return String(v==null?'':v).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();}
+
+// Mapeia cada campo para o índice da coluna, lendo a linha de cabeçalho
+function mapCols(hdr){
+  var cols={},usado={};
+  Object.keys(COLS_NOMES).forEach(function(f){
+    for(var c=0;c<hdr.length;c++){
+      var h=norm(hdr[c]);
+      if(!h||usado[c])continue;
+      // ignora colunas derivadas (conversões, taxas, custo por venda…)
+      if(/conv|taxa|%|→|->|\/| por | medi[oa]/.test(' '+h+' '))continue;
+      var ok=COLS_NOMES[f].some(function(n){return h===n||h.indexOf(n+' ')===0||h.indexOf(n+'(')===0;});
+      if(ok){cols[f]=c;usado[c]=true;return;}
+    }
+  });
+  var faltando=[];
+  Object.keys(COLS_PADRAO).forEach(function(f){if(cols[f]===undefined){cols[f]=COLS_PADRAO[f];faltando.push(f);}});
+  if(faltando.length)console.warn('Dashboard: cabeçalho não reconhecido para '+faltando.join(', ')+' — usando posição padrão.');
+  return cols;
+}
+
+// Converte "R$ 1.234,56", "1234.56" ou número em número
+function toNum(v){
+  if(typeof v==='number')return v;
+  var s=String(v==null?'':v).replace(/R\$\s*/gi,'').replace(/\s/g,'');
+  if(!s)return NaN;
+  var pct=s.indexOf('%')!==-1;s=s.replace('%','');
+  if(s.indexOf(',')!==-1)s=s.replace(/\./g,'').replace(',','.');
+  else if(/^-?\d{1,3}(\.\d{3})+$/.test(s))s=s.replace(/\./g,'');
+  var n=parseFloat(s);
+  return pct&&!isNaN(n)?n/100:n;
+}
+
 function parseMatrix(mx){
-  var hw=['empreendimento','evento','identificação','tipo','data','imobiliária','imobiliaria'];
+  var hi=-1;
+  for(var i=0;i<Math.min(mx.length,15);i++){
+    if((mx[i]||[]).some(function(c){return norm(c).indexOf('empreendimento')===0;})){hi=i;break;}
+  }
+  var cols=hi>=0?mapCols(mx[hi]):COLS_PADRAO;
+  colsUsadas=cols;
+  function tn(v){var n=toNum(v);return isNaN(n)?0:n;}
+  function ti(v){var n=toNum(v);return isNaN(n)?0:Math.round(n);}
+  function tr(v){if(v===''||v==null)return null;var n=toNum(v);return isNaN(n)?null:n;}
+  function ts(v){return String(v==null?'':v).replace(/^"|"$/g,'').trim();}
   var rows=[];
-  for(var i=0;i<mx.length;i++){
-    var row=mx[i];if(!row||row.length<5)continue;
-    var first=String(row[0]||'').trim().toLowerCase();if(!first)continue;
-    var hdr=false;for(var h=0;h<hw.length;h++){if(first.indexOf(hw[h])!==-1){hdr=true;break;}}
-    if(hdr)continue;
-    var emp=String(row[0]||'').replace(/^"|"$/g,'').trim();if(!emp)continue;
-    function tn(v){var s=String(v||'').replace(/R\$\s*/gi,'').replace(/\./g,'').replace(',','.').trim();var n=parseFloat(s);return isNaN(n)?0:n;}
-    function ti(v){var n=parseInt(String(v||'').replace(/\D/g,''));return isNaN(n)?0:n;}
-    function tr(v){var s=String(v||'').replace(',','.');var n=parseFloat(s);return isNaN(n)?null:n;}
-    function ts(v){return String(v||'').replace(/^"|"$/g,'').trim();}
-    rows.push({empreendimento:emp,imobiliaria:ts(row[1]),tipo:(ts(row[2])||'A').toUpperCase().charAt(0),evento:ts(row[3]),data:ts(row[4]),obs:ts(row[5]),custo:tn(row[6]),confirmados:ti(row[7]),presentes:ti(row[9]),propostas:ti(row[17]),vendas:ti(row[19]),vgv:tn(row[20]),roi:tr(row[23])});
+  for(var r=hi+1;r<mx.length;r++){
+    var row=mx[r];if(!row||row.length<5)continue;
+    var g=function(f){return row[cols[f]];};
+    var emp=ts(g('empreendimento'));if(!emp)continue;
+    if(norm(emp).indexOf('empreendimento')===0)continue;
+    rows.push({empreendimento:emp,imobiliaria:ts(g('imobiliaria')),tipo:(ts(g('tipo'))||'A').toUpperCase().charAt(0),evento:ts(g('evento')),data:ts(g('data')),obs:ts(g('obs')),custo:tn(g('custo')),confirmados:ti(g('confirmados')),presentes:ti(g('presentes')),propostas:ti(g('propostas')),vendas:ti(g('vendas')),vgv:tn(g('vgv')),roi:tr(g('roi'))});
   }
   return rows.filter(function(r){return r.empreendimento&&r.evento;});
 }
 
 function doPaste(raw){
   if(!raw.trim()){alert('Nenhum dado.');return;}
-  var rows=[];
-  raw.split('\n').forEach(function(line){
-    if(!line.trim())return;
-    var c=line.split('\t').map(function(s){return s.trim();});
-    if(c.length<5)return;
-    if(!c[0]||c[0].toLowerCase().indexOf('empreendimento')!==-1)return;
-    function cl(s){return(s||'').replace(/R\$\s*/gi,'').replace(/\./g,'').replace(',','.').trim();}
-    rows.push({empreendimento:c[0],imobiliaria:c[1]||'',tipo:(c[2]||'A').toUpperCase().charAt(0),evento:c[3]||'',data:c[4]||'',obs:c[5]||'',custo:parseFloat(cl(c[6]))||0,confirmados:parseInt(c[7])||0,presentes:parseInt(c[9])||0,propostas:parseInt(c[17])||0,vendas:parseInt(c[19])||0,vgv:parseFloat(cl(c[20]))||0,roi:(function(){var v=parseFloat(cl(c[23]));return isNaN(v)?null:v;})()});
-  });
+  var mx=raw.split('\n').map(function(line){return line.replace(/\r$/,'').split('\t');});
+  var rows=parseMatrix(mx);
   if(rows.length){D=rows;rebuild();alert('✓ '+rows.length+' eventos importados!');}
   else alert('Formato não reconhecido. Copie do Sheets com Ctrl+A → Ctrl+C.');
 }
@@ -409,14 +512,15 @@ function buildEmpSel(){
   var sel=document.getElementById('selEmp'),cur=sel.value;
   sel.innerHTML='<option value="">Todos os Empreendimentos</option>';
   emps.forEach(function(e){sel.innerHTML+='<option value="'+e+'">'+e+'</option>';});
-  if(emps.indexOf(cur)!==-1)sel.value=cur;
+  if(emps.indexOf(cur)!==-1)sel.value=cur;else fEmp='';
 }
 
 function buildStrip(){
   var months=[];D.forEach(function(r){var m=mk(r.data);if(m&&months.indexOf(m)===-1)months.push(m);});months.sort();
   var strip=document.getElementById('mstrip');
-  strip.innerHTML='<button class="mbtn active" data-m="all">Todos</button>';
-  months.forEach(function(m){strip.innerHTML+='<button class="mbtn" data-m="'+m+'">'+ml(m)+'</button>';});
+  if(fMonth!=='all'&&months.indexOf(fMonth)===-1)fMonth='all';
+  strip.innerHTML='<button class="mbtn'+(fMonth==='all'?' active':'')+'" data-m="all">Todos</button>';
+  months.forEach(function(m){strip.innerHTML+='<button class="mbtn'+(m===fMonth?' active':'')+'" data-m="'+m+'">'+ml(m)+'</button>';});
   strip.querySelectorAll('.mbtn').forEach(function(b){
     b.onclick=function(){strip.querySelectorAll('.mbtn').forEach(function(x){x.classList.remove('active');});b.classList.add('active');fMonth=b.getAttribute('data-m');pg=1;render();};
   });
@@ -431,8 +535,17 @@ function initEvents(){
   document.querySelectorAll('th[data-s]').forEach(function(th){
     th.onclick=function(){var s=th.getAttribute('data-s');if(sortKey===s)sortAsc=!sortAsc;else{sortKey=s;sortAsc=true;}document.querySelectorAll('th').forEach(function(x){x.classList.remove('sorted');});th.classList.add('sorted');render();};
   });
-  var saved='';try{saved=localStorage.getItem('blue_url')||'';}catch(e){}
-  if(saved){document.getElementById('asUrl').value=saved;document.getElementById('btnSync').style.display='';setSUI('ok','Planilha configurada — clique em Atualizar');if(timer)clearInterval(timer);timer=setInterval(function(){syncNow();},5*60*1000);}
+  var url=getUrl();
+  if(url){
+    document.getElementById('asUrl').value=url;
+    document.getElementById('btnSync').style.display='';
+    syncNow();
+    startAuto();
+    // ao voltar para a aba depois de um tempo, atualiza na hora
+    document.addEventListener('visibilitychange',function(){
+      if(!document.hidden&&Date.now()-lastSync>REFRESH_MIN*60*1000)syncNow();
+    });
+  }
 }
 
 function renderKPIs(d){
