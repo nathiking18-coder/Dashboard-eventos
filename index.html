@@ -305,7 +305,7 @@ var D=[
 
 // ===== CONFIGURAÇÃO =====
 // URL do App da Web do Apps Script (termina em /exec). Preenchida aqui, vale para todos que abrirem o link.
-var SHEET_URL='';
+var SHEET_URL='https://script.google.com/macros/s/AKfycbzRp1gqIcJ4WpBQHGMnaIpqbJ1075SMuUwICKC3N20gJFeRcAOXx2FxSfY3ve4tMBoT/exec';
 var REFRESH_MIN=10; // intervalo de atualização automática, em minutos
 // =========================
 
@@ -421,7 +421,7 @@ function procData(j){
 }
 
 // Posição padrão de cada coluna na planilha (usada quando o cabeçalho não é reconhecido)
-var COLS_PADRAO={empreendimento:0,imobiliaria:1,tipo:2,evento:3,data:4,obs:5,custo:6,confirmados:7,presentes:9,propostas:17,vendas:19,vgv:20,roi:23};
+var COLS_PADRAO={empreendimento:0,imobiliaria:1,tipo:2,evento:3,data:4,obs:5,custo:6,confirmados:7,presentes:9,propostas:17,vendas:19,vgv:20,roi:22};
 // Nomes de cabeçalho aceitos para cada campo (sem acento, minúsculo)
 var COLS_NOMES={
   empreendimento:['empreendimento'],
@@ -430,7 +430,7 @@ var COLS_NOMES={
   evento:['evento','acao','nome do evento','nome da acao'],
   data:['data'],
   obs:['observacao','observacoes','obs'],
-  custo:['custo','investimento'],
+  custo:['custo','total investido','investido','investimento'],
   confirmados:['confirmados','confirmacoes'],
   presentes:['presentes','presenca','comparecimento'],
   propostas:['propostas'],
@@ -450,7 +450,7 @@ function mapCols(hdr){
       var h=norm(hdr[c]);
       if(!h||usado[c])continue;
       // ignora colunas derivadas (conversões, taxas, custo por venda…)
-      if(/conv|taxa|%|→|->|\/| por | medi[oa]/.test(' '+h+' '))continue;
+      if(/conv|taxa|%|→|->| por | medi[oa]/.test(' '+h+' '))continue;
       var ok=COLS_NOMES[f].some(function(n){return h===n||h.indexOf(n+' ')===0||h.indexOf(n+'(')===0;});
       if(ok){cols[f]=c;usado[c]=true;return;}
     }
@@ -495,10 +495,24 @@ function parseMatrix(mx){
   return rows.filter(function(r){return r.empreendimento&&r.evento;});
 }
 
+// Lê o texto copiado do Sheets (TSV), respeitando células entre aspas com quebra de linha
+function parseTSV(raw){
+  var mx=[],row=[],cell='',q=false,t=raw.replace(/\r\n?/g,'\n');
+  for(var i=0;i<t.length;i++){
+    var ch=t[i];
+    if(q){if(ch==='"'){if(t[i+1]==='"'){cell+='"';i++;}else q=false;}else cell+=ch;}
+    else if(ch==='"'&&cell==='')q=true;
+    else if(ch==='\t'){row.push(cell);cell='';}
+    else if(ch==='\n'){row.push(cell);mx.push(row);row=[];cell='';}
+    else cell+=ch;
+  }
+  row.push(cell);mx.push(row);
+  return mx;
+}
+
 function doPaste(raw){
   if(!raw.trim()){alert('Nenhum dado.');return;}
-  var mx=raw.split('\n').map(function(line){return line.replace(/\r$/,'').split('\t');});
-  var rows=parseMatrix(mx);
+  var rows=parseMatrix(parseTSV(raw));
   if(rows.length){D=rows;rebuild();alert('✓ '+rows.length+' eventos importados!');}
   else alert('Formato não reconhecido. Copie do Sheets com Ctrl+A → Ctrl+C.');
 }
