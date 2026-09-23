@@ -1,10 +1,9 @@
-// Cole este código em: Planilha → Extensões → Apps Script
+// Apague TUDO no editor e cole este código inteiro em: Planilha → Extensões → Apps Script
 // Depois: Implantar → Nova implantação → App da Web
 //   Executar como: Eu · Quem pode acessar: Qualquer pessoa
 
-var NOME_ABA = 'registro de ações comerciais';
-
 function doGet(e) {
+  var NOME_ABA = 'registro de ações comerciais';
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = acharAba(ss, NOME_ABA);
   if (!sheet) return responder({ error: 'Aba "' + NOME_ABA + '" não encontrada' }, e);
@@ -26,7 +25,7 @@ function acharAba(ss, nome) {
 }
 
 function normalizar(s) {
-  return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+  return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 // JSON normal, ou JSONP quando a página pede ?callback=
